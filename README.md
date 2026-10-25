@@ -140,7 +140,28 @@ Dans la réponse JSON de l'API, chaque jour comporte un tableau `metaData.statis
 
 ---
 
-## 3. Architecture des fichiers du projet (`/home/almoha/Applications/octopus`)
+## 3. Mode Universel & Mode Secours (« Suivi conso » en erreur)
+
+L'extension a été conçue pour fonctionner sur **n'importe quel compte client Octopus Energy France** :
+
+1. **Auto-découverte universelle (`DiscoverClientProperties`) :**
+   - Interroge automatiquement `viewer -> accounts -> properties -> supplyPointsInterface` sur `https://api.oefr-kraken.energy/v1/graphql/`.
+   - Détecte tous les logements du client connecté, qu'il s'agisse de compteurs **Électricité Linky (`ElectricityMeterPoint` / PDL)** (Base ou Heures Pleines / Heures Creuses) ou **Gaz Gazpar (`GasMeterPoint` / PCE)**.
+   - Pour le gaz, `GasFiltersInput` ne prend **pas** le champ `readingQuality` (contrairement à `ElectricityFiltersInput`).
+
+2. **🛟 Mode Secours automatique quand le « Suivi conso » plante sur l'espace client :**
+   - Lorsqu'un espace client affiche une erreur sur la page « Suivi conso », c'est très souvent le calcul des coûts (`metaData.statistics`) qui échoue côté Octopus (tarif manquant ou contrat en anomalie dans Kraken), alors que les index Linky/Gazpar en kWh sont bien présents.
+   - L'extension tente d'abord `GetPropertyMeasurements` avec `metaData.statistics`.
+   - Si l'API renvoie une erreur ou `0` mesure avec les coûts, l'extension **bascule automatiquement sur `GetPropertyMeasurementsRaw` (sans `metaData` et sans filtre `readingQuality`)** pour récupérer directement les **kWh bruts journaliers** (`value` et `startAt`) et les afficher dans le Tableau de bord visuel avec export CSV en 1 clic.
+
+3. **Comment reprendre ce projet sur un autre ordinateur :**
+   - Clonez le dépôt : `git clone git@github.com:almoha73/octopus-client-extension.git`
+   - Dans Chrome, ouvrez `chrome://extensions/`, activez le **Mode développeur**, cliquez sur **Charger l'extension non empaquetée** et sélectionnez le sous-dossier `extension/`.
+   - Si vous ouvrez ce dossier dans Antigravity (ou un autre assistant IA) sur un autre poste, dites-lui simplement : *« Lis le fichier `README.md` pour avoir tout le contexte de l'extension Octopus Energy »*.
+
+---
+
+## 4. Architecture des fichiers du projet (`/home/almoha/Applications/octopus-client-extension`)
 
 - **[`all_measurements.json`](file:///home/almoha/Applications/octopus/all_measurements.json)** : Sauvegarde locale complète des mesures brutes récupérées mois par mois pour les 2 logements (457 jours pour St Merd De Lapleau + 875 jours pour Bordeaux).
 - **[`google-sheets/Code.gs`](file:///home/almoha/Applications/octopus/google-sheets/Code.gs)** : Script Google Apps Script lié à votre Google Sheet (`1xATSqg21M2ILGiKw2aj2Z4YGLd-NuB0GQhYrpR33ROQ`), qui génère et met en forme les 3 onglets (`📊 Synthèse`, `🏡 St Merd De Lapleau`, `🏢 Bordeaux`) sans doublons.
