@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Octopus Energy Sync</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header class="header">
+    <div class="header-title">
+      <span class="logo">🐙</span>
+      <div>
+        <h1>Octopus Energy Sync</h1>
+        <p>2 logements → Google Sheets</p>
+      </div>
+    </div>
+    <span id="status-badge" class="badge badge-idle">Prêt</span>
+  </header>
+
+  <main class="container">
+    <div class="actions-row">
+      <button id="sync-now-btn" class="btn btn-primary">🔄 Synchroniser</button>
+      <a
+        href="dashboard.html"
+        target="_blank"
+        class="btn btn-secondary"
+      >📈 Tableau de bord</a>
+      <a
+        id="open-sheet-btn"
+        href="https://docs.google.com/spreadsheets/d/1xATSqg21M2ILGiKw2aj2Z4YGLd-NuB0GQhYrpR33ROQ/edit"
+        target="_blank"
+        class="btn btn-secondary"
+      >📊 Sheet</a>
+    </div>
+
+    <div id="status-message" class="status-box hidden"></div>
+
+    <section class="section">
+      <h2>Dernière synchronisation</h2>
+      <p id="last-sync-time" class="muted">Synchronisation initiale effectuée</p>
+
+      <div class="cards">
+        <div class="prop-card">
+          <div class="prop-title">🏡 St Merd De Lapleau (19320)</div>
+          <div class="prop-sub">PDL 17566859598256 • Option Base</div>
+          <div id="lapleau-stats" class="prop-stats">457 jours • 3 541,24 kWh • 844,35 € TTC</div>
+        </div>
+
+        <div class="prop-card">
+          <div class="prop-title">🏢 Bordeaux (33300)</div>
+          <div class="prop-sub">PDL 16185528047969 • Option HP / HC</div>
+          <div id="bordeaux-stats" class="prop-stats">875 jours • 10 445,46 kWh • 2 200,88 € TTC</div>
+        </div>
+      </div>
+    </section>
+
+    <details class="settings-details">
+      <summary>⚙️ Paramètres Web App Google Sheets</summary>
+      <div class="settings-body">
+        <label class="field-label" for="webapp-url">URL Google Apps Script (Web App)</label>
+        <input
+          type="url"
+          id="webapp-url"
+          placeholder="https://script.google.com/macros/s/.../exec"
+        />
+        <label class="checkbox-row">
+          <input type="checkbox" id="auto-sync" checked />
+          <span>Synchroniser automatiquement à l'ouverture de l'espace client</span>
+        </label>
+        <button id="save-btn" class="btn btn-save">💾 Enregistrer</button>
+      </div>
+    </details>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>

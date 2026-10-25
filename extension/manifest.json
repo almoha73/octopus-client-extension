@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "Octopus Energy Sync - Google Sheets",
+  "version": "1.0.0",
+  "description": "Synchronise automatiquement les consommations et coûts des 2 logements Octopus Energy (St Merd De Lapleau & Bordeaux) vers votre Google Sheet.",
+  "permissions": [
+    "storage",
+    "cookies",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://octopusenergy.fr/*",
+    "https://*.octopusenergy.fr/*",
+    "https://api.oefr-kraken.energy/*",
+    "https://script.google.com/*",
+    "https://script.googleusercontent.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Octopus Energy Sync - Google Sheets",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://octopusenergy.fr/espace-client/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

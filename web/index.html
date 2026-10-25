@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Octopus Energy — Suivi Conso & Coûts (2 Logements)</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="brand-logo">🐙</div>
+      <div>
+        <h1>Octopus Energy — Tableau de Bord</h1>
+        <p id="sync-status-label" class="subtitle">Données synchronisées • Compte A-3E0B5AD1</p>
+      </div>
+    </div>
+
+    <!-- Sélecteur de logement -->
+    <div class="property-tabs" role="tablist">
+      <button class="prop-tab active" data-prop="lapleau">
+        🏡 St Merd De Lapleau <span class="tag">Base</span>
+      </button>
+      <button class="prop-tab" data-prop="bordeaux">
+        🏢 Bordeaux <span class="tag tag-hphc">HP / HC</span>
+      </button>
+      <button class="prop-tab" data-prop="both">
+        ⚡ Cumul 2 Logements
+      </button>
+    </div>
+
+    <div class="topbar-right">
+      <button id="refresh-sheet-btn" class="btn-outline" title="Rafraîchir depuis Google Sheets">
+        🔄 Sync Sheet
+      </button>
+      <a
+        href="https://docs.google.com/spreadsheets/d/1xATSqg21M2ILGiKw2aj2Z4YGLd-NuB0GQhYrpR33ROQ/edit"
+        target="_blank"
+        class="btn-sheet"
+      >📊 Google Sheet</a>
+    </div>
+  </header>
+
+  <main class="main-container">
+    <!-- Barre de contrôle : Période (Jour / Semaine Lun-Dim / Mois) + Unité principale + Navigation -->
+    <section class="controls-bar">
+      <div class="granularity-tabs">
+        <button class="gran-tab active" data-mode="day">📅 Par Jour</button>
+        <button class="gran-tab" data-mode="week">📆 Semaine (Lun → Dim)</button>
+        <button class="gran-tab" data-mode="month">📊 Par Mois</button>
+      </div>
+
+      <div class="period-navigator">
+        <button id="nav-prev" class="nav-btn" title="Période précédente">◀</button>
+        <select id="period-select" class="period-select"></select>
+        <button id="nav-next" class="nav-btn" title="Période suivante">▶</button>
+        <button id="nav-latest" class="btn-latest">Plus récent</button>
+      </div>
+
+      <div class="unit-toggle">
+        <button class="unit-btn active" data-unit="eur">💶 Euros (€ TTC)</button>
+        <button class="unit-btn" data-unit="kwh">⚡ Énergie (kWh)</button>
+      </div>
+    </section>
+
+    <!-- Cartes KPI dynamiques de la période sélectionnée -->
+    <section id="kpi-grid" class="kpi-grid"></section>
+
+    <!-- Bloc Synthèse HP/HC & Rentabilité (affiché pour Bordeaux & Cumul) -->
+    <section id="hphc-profitability-section" class="card hphc-card hidden"></section>
+
+    <!-- Graphique principal interactif -->
+    <section class="card chart-card">
+      <div class="card-header">
+        <div>
+          <h2 id="chart-title">Consommation & Coût</h2>
+          <p id="chart-subtitle" class="card-subtitle"></p>
+        </div>
+        <div id="chart-legend" class="chart-legend"></div>
+      </div>
+
+      <div id="main-chart" class="chart-wrapper"></div>
+    </section>
+
+    <!-- Deuxième bloc visuel : Comparatif des semaines ou détail journalier/mensuel -->
+    <section id="secondary-section" class="card secondary-card hidden">
+      <div class="card-header">
+        <div>
+          <h2 id="secondary-title">Historique des 12 dernières semaines (Lundi → Dimanche)</h2>
+          <p id="secondary-subtitle" class="card-subtitle">Cliquez sur une semaine pour afficher le détail de ses 7 jours ci-dessus</p>
+        </div>
+      </div>
+      <div id="secondary-chart" class="chart-wrapper"></div>
+    </section>
+
+    <!-- Tableau récapitulatif détaillé de la période -->
+    <section class="card table-card">
+      <div class="card-header">
+        <div>
+          <h2 id="table-title">Détail de la période</h2>
+          <p id="table-subtitle" class="card-subtitle"></p>
+        </div>
+      </div>
+      <div class="table-responsive">
+        <table class="data-table">
+          <thead id="table-head"></thead>
+          <tbody id="table-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- Tooltip flottant au survol des barres -->
+  <div id="chart-tooltip" class="chart-tooltip hidden"></div>
+
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
