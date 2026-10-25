@@ -96,6 +96,65 @@
   }
 
   function buildActiveRecords() {
+    if (state.customProps && state.customProps[state.prop]) {
+      const cp = state.customProps[state.prop];
+      const rows = cp.rows || [];
+      dayRecords = rows
+        .map((r) => {
+          if (cp.isHpHc) {
+            const iso = r[0];
+            const kwh = Number(r[1]) || 0;
+            const hpKwh = Number(r[2]) || 0;
+            const hcKwh = Number(r[3]) || 0;
+            const hpEur = Number(r[4]) || 0;
+            const hcEur = Number(r[5]) || 0;
+            const aboEur = Number(r[6]) || 0;
+            const consoEur = hpEur + hcEur;
+            return {
+              iso,
+              kwh,
+              baseKwh: 0,
+              hpKwh,
+              hcKwh,
+              baseEur: 0,
+              hpEur,
+              hcEur,
+              consoEur,
+              aboEur,
+              totalEur: consoEur + aboEur,
+              lapEur: 0,
+              bdxEur: consoEur + aboEur,
+              lapKwh: 0,
+              bdxKwh: kwh
+            };
+          } else {
+            const iso = r[0];
+            const kwh = Number(r[1]) || 0;
+            const baseEur = Number(r[2]) || 0;
+            const aboEur = Number(r[3]) || 0;
+            return {
+              iso,
+              kwh,
+              baseKwh: kwh,
+              hpKwh: 0,
+              hcKwh: 0,
+              baseEur,
+              hpEur: 0,
+              hcEur: 0,
+              consoEur: baseEur,
+              aboEur,
+              totalEur: baseEur + aboEur,
+              lapEur: baseEur + aboEur,
+              bdxEur: 0,
+              lapKwh: kwh,
+              bdxKwh: 0
+            };
+          }
+        })
+        .sort((a, b) => a.iso.localeCompare(b.iso));
+      return;
+    }
+
     const lapMap = new Map();
     for (const r of state.raw.lapleau || []) {
       const iso = r[0];
@@ -1096,6 +1155,91 @@
     }
   }
 
+  function exportActivePropertyCsv() {
+    if (!dayRecords.length) return;
+    const isHpHc = state.prop === 'bordeaux' || dayRecords.some((r) => r.hpKwh > 0 || r.hcKwh > 0);
+    const lines = [];
+    if (isHpHc) {
+      lines.push('Date;Conso Totale (kWh);Heures Pleines (kWh);Heures Creuses (kWh);Cout HP TTC (EUR);Cout HC TTC (EUR);Abonnement TTC (EUR);Total TTC (EUR)');
+      for (const r of [...dayRecords].reverse()) {
+        lines.push(
+          [
+            r.iso,
+            r.kwh.toFixed(3).replace('.', ','),
+            r.hpKwh.toFixed(3).replace('.', ','),
+            r.hcKwh.toFixed(3).replace('.', ','),
+            r.hpEur.toFixed(4).replace('.', ','),
+            r.hcEur.toFixed(4).replace('.', ','),
+            r.aboEur.toFixed(4).replace('.', ','),
+            r.totalEur.toFixed(2).replace('.', ',')
+          ].join(';')
+        );
+      }
+    } else {
+      lines.push('Date;Conso (kWh);Cout Conso TTC (EUR);Abonnement TTC (EUR);Total TTC (EUR)');
+      for (const r of [...dayRecords].reverse()) {
+        lines.push(
+          [
+            r.iso,
+            r.kwh.toFixed(3).replace('.', ','),
+            r.consoEur.toFixed(4).replace('.', ','),
+            r.aboEur.toFixed(4).replace('.', ','),
+            r.totalEur.toFixed(2).replace('.', ',')
+          ].join(';')
+        );
+      }
+    }
+    const blob = new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `octopus_conso_${state.prop}_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function applyUniversalClientProperties(universalData) {
+    if (!universalData || !Array.isArray(universalData.properties) || !universalData.properties.length) {
+      return;
+    }
+    const statusLbl = document.getElementById('sync-status-label');
+    statusLbl.textContent = `Compte ${universalData.accountNumber} • Scanné le ${universalData.syncedAt}`;
+
+    // Si c'est un autre compte que le compte propriétaire (A-3E0B5AD1), on remplace dynamiquement les onglets
+    if (!universalData.isOwnerAccount) {
+      const tabsContainer = document.querySelector('.property-tabs');
+      tabsContainer.innerHTML = '';
+      state.customProps = {};
+
+      universalData.properties.forEach((p, idx) => {
+        const key = p.key || `custom_${idx}`;
+        state.customProps[key] = p;
+        const btn = document.createElement('button');
+        btn.className = 'prop-tab' + (idx === 0 ? ' active' : '');
+        btn.dataset.prop = key;
+        const badgeText = p.utilityType === 'GAS' ? 'Gaz' : p.isHpHc ? 'HP / HC' : 'Base';
+        btn.innerHTML = `${p.displayName || p.name} <span class="tag">${badgeText}</span>`;
+        btn.addEventListener('click', () => {
+          state.prop = key;
+          if (p.rescueModeUsed && p.totalEur === 0) {
+            state.unit = 'kwh';
+          }
+          buildActiveRecords();
+          populatePeriodSelect();
+          updateControlButtons();
+          renderAll();
+        });
+        tabsContainer.appendChild(btn);
+      });
+
+      const firstProp = universalData.properties[0];
+      state.prop = firstProp.key || 'custom_0';
+      if (firstProp.rescueModeUsed && firstProp.totalEur === 0) {
+        state.unit = 'kwh';
+      }
+    }
+  }
+
   function mergeIncomingData(incoming) {
     if (!incoming) return;
     if (Array.isArray(incoming.lapleau) && incoming.lapleau.length) {
@@ -1114,27 +1258,28 @@
     const btn = document.getElementById('refresh-sheet-btn');
     const statusLbl = document.getElementById('sync-status-label');
     btn.disabled = true;
-    btn.textContent = '⏳ Sync en cours...';
+    btn.textContent = '⏳ Scan en cours...';
     try {
-      // Si ouvert depuis l'extension Chrome, lance directement la synchro Octopus -> Sheet + Dashboard
       if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
         const res = await new Promise((resolve) =>
-          chrome.runtime.sendMessage({ type: 'OCTOPUS_SYNC_NOW', isAuto: false }, resolve)
+          chrome.runtime.sendMessage({ type: 'OCTOPUS_SYNC_NOW', isAuto: false, monthsToFetch: 12 }, resolve)
         );
         if (res && res.ok) {
-          const st = await chrome.storage.local.get(['syncedData']);
+          const st = await chrome.storage.local.get(['syncedData', 'universalClientData']);
           if (st && st.syncedData) {
             mergeIncomingData(st.syncedData);
-            buildActiveRecords();
-            populatePeriodSelect();
-            renderAll();
           }
-          statusLbl.textContent = `Synchronisé avec Octopus & Google Sheets (${new Date().toLocaleTimeString('fr-FR')})`;
+          if (st && st.universalClientData) {
+            applyUniversalClientProperties(st.universalClientData);
+          }
+          buildActiveRecords();
+          populatePeriodSelect();
+          updateControlButtons();
+          renderAll();
           return;
         }
       }
 
-      // Fallback Web App GET
       const resp = await fetch(`${WEBAPP_URL}?action=data`);
       const json = await resp.json();
       if (json && (json.lapleau || json.bordeaux)) {
@@ -1148,7 +1293,7 @@
       statusLbl.textContent = 'Données locales chargées • Compte A-3E0B5AD1';
     } finally {
       btn.disabled = false;
-      btn.textContent = '🔄 Sync Sheet';
+      btn.textContent = '🔄 Scanner Compte';
     }
   }
 
@@ -1158,14 +1303,19 @@
       state.raw.bordeaux = window.OCTOPUS_INITIAL_DATA.bordeaux || [];
     }
 
-    // Lecture automatique des nouvelles mesures stockées par l'extension Chrome
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
       try {
-        const stored = await chrome.storage.local.get(['syncedData', 'lastSyncSummary']);
+        const stored = await chrome.storage.local.get([
+          'syncedData',
+          'lastSyncSummary',
+          'universalClientData'
+        ]);
         if (stored && stored.syncedData) {
           mergeIncomingData(stored.syncedData);
         }
-        if (stored && stored.lastSyncSummary && stored.lastSyncSummary.syncedAt) {
+        if (stored && stored.universalClientData) {
+          applyUniversalClientProperties(stored.universalClientData);
+        } else if (stored && stored.lastSyncSummary && stored.lastSyncSummary.syncedAt) {
           document.getElementById('sync-status-label').textContent =
             `Synchronisé le ${stored.lastSyncSummary.syncedAt} • Compte A-3E0B5AD1`;
         }
@@ -1241,6 +1391,8 @@
     });
 
     document.getElementById('refresh-sheet-btn').addEventListener('click', refreshFromGoogleSheet);
+    const csvBtn = document.getElementById('export-csv-btn');
+    if (csvBtn) csvBtn.addEventListener('click', exportActivePropertyCsv);
   }
 
   document.addEventListener('DOMContentLoaded', init);

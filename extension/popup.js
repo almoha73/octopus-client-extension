@@ -4,13 +4,14 @@ const DEFAULT_WEBAPP_URL =
 document.addEventListener('DOMContentLoaded', async () => {
   const syncBtn = document.getElementById('sync-now-btn');
   const saveBtn = document.getElementById('save-btn');
+  const monthsSelect = document.getElementById('months-select');
   const webAppInput = document.getElementById('webapp-url');
   const autoSyncCheckbox = document.getElementById('auto-sync');
   const statusBadge = document.getElementById('status-badge');
   const statusMessage = document.getElementById('status-message');
   const lastSyncTime = document.getElementById('last-sync-time');
-  const lapleauStats = document.getElementById('lapleau-stats');
-  const bordeauxStats = document.getElementById('bordeaux-stats');
+  const accountSubtitle = document.getElementById('account-subtitle');
+  const cardsContainer = document.getElementById('cards-container');
 
   function formatFrNum(val) {
     return Number(val || 0).toLocaleString('fr-FR', {
@@ -21,16 +22,38 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   function renderSummary(summary) {
     if (!summary) return;
+    if (summary.accountNumber) {
+      accountSubtitle.textContent = `Compte actif : ${summary.accountNumber}`;
+    }
     if (summary.syncedAt) {
-      lastSyncTime.textContent = `Synchronisé le ${summary.syncedAt}`;
+      lastSyncTime.textContent = `Scanné le ${summary.syncedAt}${summary.sheetSynced ? ' • Google Sheet mis à jour' : ''}`;
     }
-    if (summary.lapleau) {
-      const l = summary.lapleau;
-      lapleauStats.textContent = `${l.daysCount} jours (→ ${l.lastDate}) • ${formatFrNum(l.totalKwh)} kWh • ${formatFrNum(l.totalEur)} € TTC`;
-    }
-    if (summary.bordeaux) {
-      const b = summary.bordeaux;
-      bordeauxStats.textContent = `${b.daysCount} jours (→ ${b.lastDate}) • ${formatFrNum(b.totalKwh)} kWh • ${formatFrNum(b.totalEur)} € TTC`;
+
+    if (Array.isArray(summary.properties) && summary.properties.length > 0) {
+      cardsContainer.innerHTML = summary.properties
+        .map((p) => {
+          const typeLabel =
+            p.utilityType === 'GAS'
+              ? '🔥 Gaz (PCE)'
+              : p.isHpHc
+              ? '⚡ Option HP / HC (PDL)'
+              : '⚡ Option Base (PDL)';
+          const rescueBadge = p.rescueModeUsed
+            ? `<div style="margin-top:4px;font-size:10px;color:#fbbf24;font-weight:700">🛟 Mode Secours kWh actif (coûts en erreur côté Octopus)</div>`
+            : '';
+          const costPart =
+            p.totalEur > 0 ? ` • ${formatFrNum(p.totalEur)} € TTC` : ' • (kWh bruts récupérés)';
+
+          return `
+            <div class="prop-card">
+              <div class="prop-title">${p.displayName || p.name}</div>
+              <div class="prop-sub">${typeLabel} ${p.pdl} • ${p.address || ''}</div>
+              <div class="prop-stats">${p.daysCount} jours${p.lastDate ? ` (→ ${p.lastDate})` : ''} • ${formatFrNum(p.totalKwh)} kWh${costPart}</div>
+              ${rescueBadge}
+            </div>
+          `;
+        })
+        .join('');
     }
   }
 
@@ -73,8 +96,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   syncBtn.addEventListener('click', async () => {
     syncBtn.disabled = true;
-    syncBtn.textContent = '⏳ Synchronisation...';
-    statusBadge.textContent = 'En cours...';
+    syncBtn.textContent = '⏳ Scan en cours...';
+    statusBadge.textContent = 'Scan API...';
     statusBadge.className = 'badge badge-sync';
     statusMessage.className = 'status-box hidden';
 
@@ -85,19 +108,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         const resp = await chrome.tabs.sendMessage(tab.id, { type: 'GET_PAGE_COOKIE_TOKEN' });
         if (resp && resp.accessToken) pageToken = resp.accessToken;
       }
-    } catch (e) {
-      // fallback to chrome.cookies in background.js
-    }
+    } catch (e) {}
 
     chrome.runtime.sendMessage(
       {
         type: 'OCTOPUS_SYNC_NOW',
         accessToken: pageToken,
-        isAuto: false
+        isAuto: false,
+        monthsToFetch: Number(monthsSelect.value) || 12
       },
       (res) => {
         syncBtn.disabled = false;
-        syncBtn.textContent = '🔄 Synchroniser maintenant';
+        syncBtn.textContent = '🔄 Scanner le compte';
 
         if (chrome.runtime.lastError) {
           statusBadge.textContent = 'Erreur';
@@ -110,7 +132,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           statusBadge.textContent = 'À jour';
           statusBadge.className = 'badge badge-ok';
           renderSummary(res.summary);
-          showStatus('✅ Synchronisation réussie vers votre Google Sheet !', false);
+          const count = (res.summary && res.summary.properties && res.summary.properties.length) || 0;
+          showStatus(`✅ ${count} compteur(s) récupéré(s) ! Ouvrez le Tableau de bord pour visualiser.`, false);
         } else {
           statusBadge.textContent = 'Erreur';
           statusBadge.className = 'badge badge-err';

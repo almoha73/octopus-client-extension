@@ -1,7 +1,6 @@
 /**
- * Content Script - Octopus Energy Sync
- * S'exécute automatiquement sur https://octopusenergy.fr/espace-client/*
- * et synchronise les 2 logements vers Google Sheets.
+ * Content Script - Octopus Energy Sync & Diagnostic Universel
+ * S'exécute sur https://octopusenergy.fr/espace-client/*
  */
 
 (function () {
@@ -33,7 +32,8 @@
         transition: 'opacity 0.3s ease, transform 0.3s ease',
         display: 'flex',
         alignItems: 'center',
-        gap: '10px'
+        gap: '10px',
+        maxWidth: '460px'
       });
       document.body.appendChild(toast);
     }
@@ -50,7 +50,7 @@
     toast._hideTimer = setTimeout(() => {
       toast.style.opacity = '0';
       toast.style.transform = 'translateY(10px)';
-    }, 5500);
+    }, 6000);
   }
 
   function triggerAutoSync() {
@@ -68,8 +68,11 @@
         if (res.skipped) return;
         if (res.ok && res.summary) {
           const s = res.summary;
+          const props = s.properties || [];
+          const details = props.map((p) => `${p.name}: ${p.daysCount} j`).join(' • ');
+          const rescueAny = props.some((p) => p.rescueModeUsed);
           showToast(
-            `🐙 Octopus Sync : St Merd (${s.lapleau.daysCount} j) & Bordeaux (${s.bordeaux.daysCount} j) synchronisés vers Google Sheets !`
+            `🐙 Octopus (${s.accountNumber}) : ${details}${rescueAny ? ' [🛟 Mode Secours kWh actif]' : ''}`
           );
         } else if (res.error) {
           showToast(`⚠️ Octopus Sync : ${res.error}`, true);
@@ -84,6 +87,5 @@
     }
   });
 
-  // Lancer la synchronisation automatique après le chargement de l'espace client
   setTimeout(triggerAutoSync, 2000);
 })();

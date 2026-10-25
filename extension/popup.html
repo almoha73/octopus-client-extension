@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <title>Octopus Energy Sync</title>
+  <title>Octopus Energy Sync & Diagnostic</title>
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
@@ -11,7 +11,7 @@
       <span class="logo">🐙</span>
       <div>
         <h1>Octopus Energy Sync</h1>
-        <p>2 logements → Google Sheets</p>
+        <p id="account-subtitle">Auto-découverte multi-comptes & Mode Secours</p>
       </div>
     </div>
     <span id="status-badge" class="badge badge-idle">Prêt</span>
@@ -19,7 +19,7 @@
 
   <main class="container">
     <div class="actions-row">
-      <button id="sync-now-btn" class="btn btn-primary">🔄 Synchroniser</button>
+      <button id="sync-now-btn" class="btn btn-primary">🔄 Scanner le compte</button>
       <a
         href="dashboard.html"
         target="_blank"
@@ -33,29 +33,40 @@
       >📊 Sheet</a>
     </div>
 
+    <div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;color:#cbd5e1">
+      <label for="months-select">Profondeur de scan API :</label>
+      <select id="months-select" style="background:#180048;color:#fff;border:1px solid rgba(216,180,254,0.35);border-radius:6px;padding:3px 8px;font-size:11px">
+        <option value="3">3 derniers mois (rapide)</option>
+        <option value="6">6 derniers mois</option>
+        <option value="12" selected>12 derniers mois</option>
+        <option value="24">24 derniers mois</option>
+        <option value="36">36 derniers mois</option>
+      </select>
+    </div>
+
     <div id="status-message" class="status-box hidden"></div>
 
     <section class="section">
-      <h2>Dernière synchronisation</h2>
-      <p id="last-sync-time" class="muted">Synchronisation initiale effectuée</p>
+      <h2>Logements & Compteurs détectés</h2>
+      <p id="last-sync-time" class="muted">Compte A-3E0B5AD1 préchargé</p>
 
-      <div class="cards">
+      <div id="cards-container" class="cards">
         <div class="prop-card">
           <div class="prop-title">🏡 St Merd De Lapleau (19320)</div>
           <div class="prop-sub">PDL 17566859598256 • Option Base</div>
-          <div id="lapleau-stats" class="prop-stats">457 jours • 3 541,24 kWh • 844,35 € TTC</div>
+          <div class="prop-stats">457 jours • 3 541,24 kWh • 844,35 € TTC</div>
         </div>
 
         <div class="prop-card">
           <div class="prop-title">🏢 Bordeaux (33300)</div>
           <div class="prop-sub">PDL 16185528047969 • Option HP / HC</div>
-          <div id="bordeaux-stats" class="prop-stats">875 jours • 10 445,46 kWh • 2 200,88 € TTC</div>
+          <div class="prop-stats">875 jours • 10 445,46 kWh • 2 200,88 € TTC</div>
         </div>
       </div>
     </section>
 
     <details class="settings-details">
-      <summary>⚙️ Paramètres Web App Google Sheets</summary>
+      <summary>⚙️ Paramètres Google Sheets & Auto-Sync</summary>
       <div class="settings-body">
         <label class="field-label" for="webapp-url">URL Google Apps Script (Web App)</label>
         <input
@@ -65,7 +76,7 @@
         />
         <label class="checkbox-row">
           <input type="checkbox" id="auto-sync" checked />
-          <span>Synchroniser automatiquement à l'ouverture de l'espace client</span>
+          <span>Scanner automatiquement à l'ouverture d'un espace client Octopus</span>
         </label>
         <button id="save-btn" class="btn btn-save">💾 Enregistrer</button>
       </div>
