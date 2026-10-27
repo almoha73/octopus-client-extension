@@ -47,7 +47,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           return `
             <div class="prop-card">
               <div class="prop-title">${p.displayName || p.name}</div>
-              <div class="prop-sub">${typeLabel} ${p.pdl} • ${p.address || ''}</div>
+              <div class="prop-sub">${typeLabel} ${p.pdl || ''} • ${p.address || ''}</div>
               <div class="prop-stats">${p.daysCount} jours${p.lastDate ? ` (→ ${p.lastDate})` : ''} • ${formatFrNum(p.totalKwh)} kWh${costPart}</div>
               ${rescueBadge}
             </div>
@@ -102,11 +102,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     statusMessage.className = 'status-box hidden';
 
     let pageToken = null;
+    let pageRefreshToken = null;
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (tab && tab.id && tab.url && tab.url.includes('octopusenergy.fr')) {
         const resp = await chrome.tabs.sendMessage(tab.id, { type: 'GET_PAGE_COOKIE_TOKEN' });
         if (resp && resp.accessToken) pageToken = resp.accessToken;
+        if (resp && resp.refreshToken) pageRefreshToken = resp.refreshToken;
       }
     } catch (e) {}
 
@@ -114,6 +116,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       {
         type: 'OCTOPUS_SYNC_NOW',
         accessToken: pageToken,
+        refreshToken: pageRefreshToken,
         isAuto: false,
         monthsToFetch: Number(monthsSelect.value) || 12
       },
@@ -133,7 +136,10 @@ document.addEventListener('DOMContentLoaded', async () => {
           statusBadge.className = 'badge badge-ok';
           renderSummary(res.summary);
           const count = (res.summary && res.summary.properties && res.summary.properties.length) || 0;
-          showStatus(`✅ ${count} compteur(s) récupéré(s) ! Ouvrez le Tableau de bord pour visualiser.`, false);
+          showStatus(
+            `✅ ${count} compteur(s) récupéré(s) ! Ouvrez le Tableau de bord pour visualiser.`,
+            false
+          );
         } else {
           statusBadge.textContent = 'Erreur';
           statusBadge.className = 'badge badge-err';

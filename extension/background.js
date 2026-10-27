@@ -1,5 +1,6 @@
 /**
  * Service Worker d'arrière-plan - Octopus Energy Sync & Diagnostic Universel
+ * - Rafraîchit automatiquement le jeton JWT (accessToken) via le refreshToken si expiré le matin
  * - Auto-découvre tous les comptes, logements, compteurs Linky (PDL) et Gazpar (PCE)
  *   de n'importe quel client connecté sur octopusenergy.fr
  * - Récupère les consommations mois par mois (avec coûts € TTC)
@@ -16,7 +17,36 @@ const DEFAULT_SHEET_URL =
 const OWNER_ACCOUNT_NUMBER = 'A-3E0B5AD1';
 const KRAKEN_GRAPHQL_URL = 'https://api.oefr-kraken.energy/v1/graphql/';
 
-const DISCOVER_QUERY = `query DiscoverClientProperties {
+// Configuration connue et garantie pour les 2 logements du compte propriétaire A-3E0B5AD1
+const KNOWN_OWNER_PROPERTIES = {
+  '717277': {
+    key: 'lapleau',
+    accountNumber: OWNER_ACCOUNT_NUMBER,
+    propertyId: '717277',
+    address: '4 Route De Lapleau, St Merd De Lapleau, 19320',
+    postcode: '19320',
+    name: 'St Merd De Lapleau (19320)',
+    displayName: '🏡 St Merd De Lapleau (19320)',
+    pdl: '17566859598256',
+    utilityType: 'ELECTRICITY',
+    isHpHc: false
+  },
+  '78601': {
+    key: 'bordeaux',
+    accountNumber: OWNER_ACCOUNT_NUMBER,
+    propertyId: '78601',
+    address: '38 Rue Commandant Hautreux, Res Les Allees Balgu 3 415, Bordeaux, 33300',
+    postcode: '33300',
+    name: 'Bordeaux (33300)',
+    displayName: '🏢 Bordeaux (33300)',
+    pdl: '16185528047969',
+    utilityType: 'ELECTRICITY',
+    isHpHc: true
+  }
+};
+
+// 1. Requête légère et 100% fiable pour lister les comptes et logements du client connecté
+const VIEWER_ACCOUNTS_QUERY = `query GetViewerAccounts {
   viewer {
     accounts {
       number
@@ -25,32 +55,75 @@ const DISCOVER_QUERY = `query DiscoverClientProperties {
           id
           address
           postcode
-          supplyPointsInterface {
-            edges {
-              node {
-                id
-                marketName
-                externalIdentifier
-                ... on SupplyPointType {
-                  meterPoint {
-                    __typename
-                    id
-                    isSmartMeter
-                    ... on ElectricityMeterPoint {
-                      subscribedMaxPower
-                      offPeakLabel
-                    }
-                    ... on GasMeterPoint {
-                      annualConsumption
-                    }
-                  }
-                }
+        }
+      }
+    }
+  }
+}`;
+
+// 2. Requête officielle utilisée par l'espace client octopusenergy.fr pour récupérer les contrats et compteurs (PDL/PCE)
+const ACCOUNT_AGREEMENTS_QUERY = `query GetAccountAgreements($accountNumber: String!) {
+  agreements(first: 50, accountNumber: $accountNumber) {
+    edges {
+      node {
+        __typename
+        supplyPoint {
+          __typename
+          id
+          marketName
+          externalIdentifier
+          meterPoint {
+            __typename
+            id
+            propertyId
+            isSmartMeter
+            ... on ElectricityMeterPoint {
+              subscribedMaxPower
+              offPeakValues {
+                label
               }
+            }
+            ... on GasMeterPoint {
+              annualConsumption
             }
           }
         }
       }
     }
+  }
+}`;
+
+// 3. Requête de secours par logement avec pagination Relay explicite (first: 20)
+const PROPERTY_SUPPLY_POINTS_QUERY = `query GetPropertySupplyPoints($propertyId: ID!) {
+  property(id: $propertyId) {
+    id
+    address
+    postcode
+    supplyPointsInterface(first: 20) {
+      edges {
+        node {
+          id
+          marketName
+          externalIdentifier
+          ... on SupplyPointType {
+            meterPoint {
+              __typename
+              id
+              propertyId
+              isSmartMeter
+            }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+// 4. Mutation Kraken pour rafraîchir automatiquement un accessToken expiré via le cookie refreshToken
+const REFRESH_TOKEN_MUTATION = `mutation RefreshKrakenToken($input: ObtainJSONWebTokenInput!) {
+  obtainKrakenToken(input: $input) {
+    token
+    refreshToken
   }
 }`;
 
@@ -125,6 +198,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'OCTOPUS_SYNC_NOW') {
     runFullSync({
       explicitToken: message.accessToken || null,
+      explicitRefreshToken: message.refreshToken || null,
       isAuto: Boolean(message.isAuto),
       monthsToFetch: Number(message.monthsToFetch) || 12
     })
@@ -134,33 +208,179 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-async function getAccessToken(explicitToken) {
-  if (explicitToken && explicitToken.length > 20) {
-    return explicitToken;
-  }
+/**
+ * Vérifie si un jeton JWT (accessToken) est expiré ou expire dans moins de 30 secondes
+ */
+function isJwtExpired(token) {
+  if (!token || typeof token !== 'string') return true;
+  const parts = token.split('.');
+  if (parts.length !== 3) return false;
   try {
-    const cookie = await chrome.cookies.get({
-      url: 'https://octopusenergy.fr',
-      name: 'accessToken'
+    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
+    const payload = JSON.parse(atob(padded));
+    if (payload && typeof payload.exp === 'number') {
+      return payload.exp * 1000 < Date.now() + 30000;
+    }
+  } catch (e) {}
+  return false;
+}
+
+/**
+ * Lit les cookies accessToken et refreshToken depuis l'API chrome.cookies et/ou l'onglet actif
+ */
+async function readOctopusCookies(explicitToken = null, explicitRefreshToken = null) {
+  let accessToken = explicitToken && explicitToken.length > 20 ? explicitToken : null;
+  let refreshToken = explicitRefreshToken && explicitRefreshToken.length > 10 ? explicitRefreshToken : null;
+
+  try {
+    const allCookies = await chrome.cookies.getAll({ domain: 'octopusenergy.fr' });
+    for (const c of allCookies || []) {
+      if (c.name === 'accessToken' && c.value && !accessToken) {
+        accessToken = decodeURIComponent(c.value);
+      }
+      if (c.name === 'refreshToken' && c.value && !refreshToken) {
+        refreshToken = decodeURIComponent(c.value);
+      }
+    }
+  } catch (e) {}
+
+  if (!accessToken) {
+    try {
+      const c = await chrome.cookies.get({ url: 'https://octopusenergy.fr', name: 'accessToken' });
+      if (c && c.value) accessToken = decodeURIComponent(c.value);
+    } catch (e) {}
+  }
+
+  if (!refreshToken) {
+    try {
+      const c = await chrome.cookies.get({ url: 'https://octopusenergy.fr', name: 'refreshToken' });
+      if (c && c.value) refreshToken = decodeURIComponent(c.value);
+    } catch (e) {}
+  }
+
+  // Fallback via scripting sur un onglet octopusenergy.fr ouvert (utile si l'extension vient d'être rechargée)
+  if ((!accessToken || isJwtExpired(accessToken)) && chrome.tabs && chrome.scripting) {
+    try {
+      const tabs = await chrome.tabs.query({ url: ['https://octopusenergy.fr/*', 'https://*.octopusenergy.fr/*'] });
+      for (const tab of tabs || []) {
+        if (!tab.id) continue;
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => {
+            const getCk = (name) => {
+              const m = document.cookie.match(new RegExp('(?:^|;\\s*)' + name + '=([^;]+)'));
+              return m ? decodeURIComponent(m[1]) : null;
+            };
+            return {
+              accessToken: getCk('accessToken'),
+              refreshToken: getCk('refreshToken'),
+              href: window.location.href
+            };
+          }
+        });
+        const res = results && results[0] && results[0].result;
+        if (res) {
+          if (res.accessToken && (!accessToken || isJwtExpired(accessToken))) {
+            accessToken = res.accessToken;
+          }
+          if (res.refreshToken && !refreshToken) {
+            refreshToken = res.refreshToken;
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  return { accessToken, refreshToken };
+}
+
+/**
+ * Rafraîchit le jeton JWT Kraken à l'aide du refreshToken et met à jour le cookie Chrome
+ */
+async function refreshKrakenAccessToken(refreshToken) {
+  if (!refreshToken) return null;
+  try {
+    const response = await fetch(KRAKEN_GRAPHQL_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json'
+      },
+      body: JSON.stringify({
+        operationName: 'RefreshKrakenToken',
+        query: REFRESH_TOKEN_MUTATION,
+        variables: {
+          input: { refreshToken }
+        }
+      })
     });
-    if (cookie && cookie.value) {
-      return decodeURIComponent(cookie.value);
+    if (!response.ok) return null;
+    const json = await response.json();
+    const tokenData = json && json.data && json.data.obtainKrakenToken;
+    if (tokenData && tokenData.token) {
+      try {
+        await chrome.cookies.set({
+          url: 'https://octopusenergy.fr',
+          name: 'accessToken',
+          value: tokenData.token,
+          path: '/',
+          secure: true,
+          sameSite: 'lax'
+        });
+        if (tokenData.refreshToken) {
+          await chrome.cookies.set({
+            url: 'https://octopusenergy.fr',
+            name: 'refreshToken',
+            value: tokenData.refreshToken,
+            path: '/',
+            secure: true,
+            sameSite: 'lax'
+          });
+        }
+      } catch (e) {}
+      return tokenData.token;
     }
   } catch (e) {}
   return null;
+}
+
+/**
+ * Récupère un accessToken valide (et le rafraîchit automatiquement s'il a expiré pendant la nuit)
+ */
+async function getValidAccessToken(explicitToken = null, explicitRefreshToken = null) {
+  const { accessToken, refreshToken } = await readOctopusCookies(explicitToken, explicitRefreshToken);
+
+  if (accessToken && !isJwtExpired(accessToken)) {
+    return { token: accessToken, refreshToken };
+  }
+
+  // Si l'accessToken est expiré ou absent mais qu'on a un refreshToken, on le régénère !
+  if (refreshToken) {
+    const freshToken = await refreshKrakenAccessToken(refreshToken);
+    if (freshToken) {
+      return { token: freshToken, refreshToken };
+    }
+  }
+
+  return { token: accessToken || null, refreshToken: refreshToken || null };
 }
 
 async function graphqlRequest(token, query, variables = {}, operationName = undefined) {
   const body = { query, variables };
   if (operationName) body.operationName = operationName;
 
+  const headers = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json'
+  };
+  if (token) {
+    headers.Authorization = token;
+  }
+
   const response = await fetch(KRAKEN_GRAPHQL_URL, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      Authorization: token
-    },
+    headers,
     body: JSON.stringify(body)
   });
 
@@ -171,55 +391,244 @@ async function graphqlRequest(token, query, variables = {}, operationName = unde
   return await response.json();
 }
 
+function isGraphqlAuthError(json) {
+  if (!json || !Array.isArray(json.errors)) return false;
+  return json.errors.some((e) => {
+    const msg = String((e && e.message) || '').toLowerCase();
+    const code = String((e && e.extensions && e.extensions.errorCode) || '');
+    const type = String((e && e.extensions && e.extensions.errorType) || '');
+    return (
+      type === 'AUTHORIZATION' ||
+      code === 'KT-CT-1111' ||
+      code === 'KT-CT-1112' ||
+      code === 'KT-CT-1143' ||
+      msg.includes('expired') ||
+      msg.includes('authorization') ||
+      msg.includes('credential') ||
+      msg.includes('jwt')
+    );
+  });
+}
+
+function normalizeMeterId(rawId) {
+  if (!rawId) return null;
+  const s = String(rawId).trim();
+  if (/^\d{10,16}$/.test(s)) return s;
+  try {
+    const decoded = atob(s);
+    if (decoded && decoded.includes(':')) {
+      const afterColon = decoded.split(':').pop().trim();
+      if (afterColon) return afterColon;
+    }
+  } catch (e) {}
+  return s;
+}
+
+function pickBestPdl(sp, mp) {
+  const candidates = [
+    mp && mp.id,
+    sp && sp.externalIdentifier,
+    sp && sp.id
+  ]
+    .map(normalizeMeterId)
+    .filter(Boolean);
+
+  const digits14 = candidates.find((c) => /^\d{14}$/.test(c));
+  if (digits14) return digits14;
+  const digitsAny = candidates.find((c) => /^\d{10,16}$/.test(c));
+  if (digitsAny) return digitsAny;
+  return candidates[0] || null;
+}
+
 /**
  * Découvre automatiquement tous les comptes, logements et compteurs (Électricité Linky & Gaz Gazpar)
  */
-async function discoverClientSupplyPoints(token) {
-  const json = await graphqlRequest(token, DISCOVER_QUERY);
-  if (json.errors && json.errors.length > 0 && !json.data) {
-    throw new Error(json.errors[0].message || 'Impossible de lire les logements du compte');
+async function discoverClientSupplyPoints(token, refreshToken = null) {
+  let activeToken = token;
+  let viewerJson = await graphqlRequest(activeToken, VIEWER_ACCOUNTS_QUERY, {}, 'GetViewerAccounts');
+
+  // Si le jeton a expiré côté Kraken, on tente un rafraîchissement immédiat via refreshToken
+  if (
+    (!viewerJson.data || !viewerJson.data.viewer) &&
+    isGraphqlAuthError(viewerJson) &&
+    refreshToken
+  ) {
+    const refreshed = await refreshKrakenAccessToken(refreshToken);
+    if (refreshed) {
+      activeToken = refreshed;
+      viewerJson = await graphqlRequest(activeToken, VIEWER_ACCOUNTS_QUERY, {}, 'GetViewerAccounts');
+    }
   }
 
-  const accounts = (json.data && json.data.viewer && json.data.viewer.accounts) || [];
+  if (!viewerJson.data || !viewerJson.data.viewer) {
+    if (isGraphqlAuthError(viewerJson)) {
+      throw new Error(
+        'Votre session Octopus Energy a expiré. Rafraîchissez la page octopusenergy.fr (touche F5) puis réessayez.'
+      );
+    }
+    if (viewerJson.errors && viewerJson.errors.length > 0) {
+      throw new Error(viewerJson.errors[0].message || 'Impossible de lire le profil Octopus Energy.');
+    }
+  }
+
+  const accounts =
+    (viewerJson.data && viewerJson.data.viewer && viewerJson.data.viewer.accounts) || [];
   const discovered = [];
+  const seenKeys = new Set();
 
   for (const acc of accounts) {
-    const accountNumber = acc.number || 'Compte';
+    const accountNumber = acc.number || OWNER_ACCOUNT_NUMBER;
     const props = acc.properties || [];
-
+    const propById = new Map();
     for (const p of props) {
-      const spEdges = (p.supplyPointsInterface && p.supplyPointsInterface.edges) || [];
-      for (const edge of spEdges) {
-        const node = edge && edge.node;
-        if (!node) continue;
-        const mp = node.meterPoint || {};
-        const typename = mp.__typename || '';
-        const isGas = typename === 'GasMeterPoint' || /gas|gaz/i.test(node.marketName || '');
-        const marketSupplyPointId = node.externalIdentifier || mp.id || node.id;
-        if (!marketSupplyPointId) continue;
+      if (p && p.id) {
+        propById.set(String(p.id), p);
+      }
+    }
 
-        const shortCity = extractCityFromAddress(p.address, p.postcode);
+    // 1. Si le logement fait partie des 2 logements connus du compte propriétaire A-3E0B5AD1,
+    //    on garantit ses métadonnées exactes (PDL, nom, option Base vs HP/HC)
+    for (const p of props) {
+      const pid = String(p.id);
+      if (KNOWN_OWNER_PROPERTIES[pid]) {
+        const known = { ...KNOWN_OWNER_PROPERTIES[pid], accountNumber };
+        if (p.address) known.address = p.address;
+        if (p.postcode) known.postcode = p.postcode;
+        discovered.push(known);
+        seenKeys.add(`${pid}_${known.pdl}`);
+      }
+    }
+
+    // 2. Découverte universelle via agreements(first: 50, accountNumber) — méthode officielle de l'espace client
+    try {
+      const agJson = await graphqlRequest(
+        activeToken,
+        ACCOUNT_AGREEMENTS_QUERY,
+        { accountNumber },
+        'GetAccountAgreements'
+      );
+      const agEdges =
+        (agJson && agJson.data && agJson.data.agreements && agJson.data.agreements.edges) || [];
+
+      for (const edge of agEdges) {
+        const node = edge && edge.node;
+        const sp = node && node.supplyPoint;
+        if (!sp) continue;
+        const mp = sp.meterPoint || {};
+        const propId = String(mp.propertyId || '');
+        const pInfo = propById.get(propId) || {
+          id: propId || 'logement',
+          address: '',
+          postcode: ''
+        };
+
+        const pdl = pickBestPdl(sp, mp);
+        if (!pdl) continue;
+
+        const dedupKey = `${pInfo.id}_${pdl}`;
+        if (seenKeys.has(dedupKey)) continue;
+        seenKeys.add(dedupKey);
+
+        const isGas =
+          mp.__typename === 'GasMeterPoint' ||
+          node.__typename === 'GasSpecificAgreementType' ||
+          /gas|gaz/i.test(sp.marketName || '');
+
+        const hasOffPeak =
+          Array.isArray(mp.offPeakValues) && mp.offPeakValues.length > 0;
+        const shortCity = extractCityFromAddress(pInfo.address, pInfo.postcode);
         const energyBadge = isGas ? '🔥 Gaz' : '⚡ Élec';
 
         discovered.push({
-          key: `prop_${p.id}_${marketSupplyPointId}`,
+          key: `prop_${pInfo.id}_${pdl}`,
           accountNumber,
-          propertyId: String(p.id),
-          address: p.address || `Logement ${p.id}`,
-          postcode: p.postcode || '',
-          name: `${shortCity} (${p.postcode || p.id})`,
-          displayName: `${isGas ? '🔥' : '🏡'} ${shortCity} (${p.postcode || energyBadge})`,
-          pdl: String(marketSupplyPointId),
+          propertyId: String(pInfo.id),
+          address: pInfo.address || `Logement ${pInfo.id}`,
+          postcode: pInfo.postcode || '',
+          name: `${shortCity} (${pInfo.postcode || pInfo.id})`,
+          displayName: `${isGas ? '🔥' : '🏡'} ${shortCity} (${pInfo.postcode || energyBadge})`,
+          pdl: String(pdl),
           utilityType: isGas ? 'GAS' : 'ELECTRICITY',
           subscribedMaxPower: mp.subscribedMaxPower || null,
-          offPeakLabel: mp.offPeakLabel || null,
-          isHpHc: Boolean(mp.offPeakLabel) || String(p.id) === '78601'
+          isHpHc: hasOffPeak || String(pInfo.id) === '78601'
+        });
+      }
+    } catch (e) {}
+
+    // 3. Pour tout logement qui n'aurait pas encore été associé à un compteur via agreements,
+    //    on interroge supplyPointsInterface(first: 20) sur ce logement
+    for (const p of props) {
+      const pid = String(p.id);
+      const alreadyFoundForProp = discovered.some((d) => d.propertyId === pid);
+      if (alreadyFoundForProp) continue;
+
+      try {
+        const spJson = await graphqlRequest(
+          activeToken,
+          PROPERTY_SUPPLY_POINTS_QUERY,
+          { propertyId: pid },
+          'GetPropertySupplyPoints'
+        );
+        const spEdges =
+          (spJson &&
+            spJson.data &&
+            spJson.data.property &&
+            spJson.data.property.supplyPointsInterface &&
+            spJson.data.property.supplyPointsInterface.edges) ||
+          [];
+
+        for (const edge of spEdges) {
+          const node = edge && edge.node;
+          if (!node) continue;
+          const mp = node.meterPoint || {};
+          const pdl = pickBestPdl(node, mp);
+          if (!pdl) continue;
+
+          const dedupKey = `${pid}_${pdl}`;
+          if (seenKeys.has(dedupKey)) continue;
+          seenKeys.add(dedupKey);
+
+          const isGas =
+            mp.__typename === 'GasMeterPoint' || /gas|gaz/i.test(node.marketName || '');
+          const shortCity = extractCityFromAddress(p.address, p.postcode);
+          const energyBadge = isGas ? '🔥 Gaz' : '⚡ Élec';
+
+          discovered.push({
+            key: `prop_${pid}_${pdl}`,
+            accountNumber,
+            propertyId: pid,
+            address: p.address || `Logement ${pid}`,
+            postcode: p.postcode || '',
+            name: `${shortCity} (${p.postcode || pid})`,
+            displayName: `${isGas ? '🔥' : '🏡'} ${shortCity} (${p.postcode || energyBadge})`,
+            pdl: String(pdl),
+            utilityType: isGas ? 'GAS' : 'ELECTRICITY',
+            isHpHc: pid === '78601'
+          });
+        }
+      } catch (e) {}
+
+      // 4. Ultime repli : si aucun PDL n'est remonté pour ce logement, on l'ajoute quand même
+      //    (GetPropertyMeasurements fonctionnera sans filtre marketSupplyPointId)
+      if (!discovered.some((d) => d.propertyId === pid)) {
+        const shortCity = extractCityFromAddress(p.address, p.postcode);
+        discovered.push({
+          key: `prop_${pid}`,
+          accountNumber,
+          propertyId: pid,
+          address: p.address || `Logement ${pid}`,
+          postcode: p.postcode || '',
+          name: `${shortCity} (${p.postcode || pid})`,
+          displayName: `🏡 ${shortCity} (${p.postcode || pid})`,
+          pdl: '',
+          utilityType: 'ELECTRICITY',
+          isHpHc: pid === '78601'
         });
       }
     }
   }
 
-  return discovered;
+  return { discovered, activeToken };
 }
 
 function extractCityFromAddress(address, postcode) {
@@ -229,7 +638,6 @@ function extractCityFromAddress(address, postcode) {
     .map((s) => s.trim())
     .filter(Boolean);
   if (parts.length >= 2) {
-    // Souvent: "Rue..., Ville, CodePostal"
     const candidate = parts[parts.length - 2];
     if (candidate && !/^\d+$/.test(candidate)) return candidate;
   }
@@ -272,19 +680,20 @@ function getRecentMonthWindows(monthsCount = 12) {
 
 function buildUtilityFilters(prop, includeReadingQuality = true) {
   if (prop.utilityType === 'GAS') {
-    return [
-      {
-        gasFilters: {
-          readingFrequencyType: 'DAY_INTERVAL',
-          marketSupplyPointId: prop.pdl
-        }
-      }
-    ];
+    const gf = {
+      readingFrequencyType: 'DAY_INTERVAL'
+    };
+    if (prop.pdl) {
+      gf.marketSupplyPointId = prop.pdl;
+    }
+    return [{ gasFilters: gf }];
   }
   const ef = {
-    readingFrequencyType: 'DAY_INTERVAL',
-    marketSupplyPointId: prop.pdl
+    readingFrequencyType: 'DAY_INTERVAL'
   };
+  if (prop.pdl) {
+    ef.marketSupplyPointId = prop.pdl;
+  }
   if (includeReadingQuality) {
     ef.readingQuality = 'ACTUAL';
   }
@@ -323,7 +732,6 @@ async function fetchMonthWithFallback(prop, windowObj, token) {
       return { edges, fallbackUsed: false };
     }
     if (res.errors && res.errors.length > 0) {
-      // Erreur sur metaData -> bascule en mode secours kWh bruts
       const rawRes = await graphqlRequest(
         token,
         MEASUREMENTS_RAW_KWH_QUERY,
@@ -471,12 +879,33 @@ async function fetchPropertyDataMonthByMonth(prop, token, monthsCount = 12) {
   return parsePropertyMeasurements(allEdges, prop, fallbackMonthsCount);
 }
 
-async function runFullSync({ explicitToken = null, isAuto = false, monthsToFetch = 6 } = {}) {
+function mergeRowsByDate(existingRows, incomingRows) {
+  const map = new Map();
+  for (const r of existingRows || []) {
+    if (Array.isArray(r) && r[0]) map.set(r[0], r);
+  }
+  for (const r of incomingRows || []) {
+    if (Array.isArray(r) && r[0]) map.set(r[0], r);
+  }
+  return Array.from(map.values()).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+}
+
+async function runFullSync({
+  explicitToken = null,
+  explicitRefreshToken = null,
+  isAuto = false,
+  monthsToFetch = 12
+} = {}) {
   if (isSyncing) {
     return { ok: false, error: 'Synchronisation déjà en cours...' };
   }
 
-  const cfg = await chrome.storage.local.get(['webAppUrl', 'autoSync', 'lastSyncAtMs']);
+  const cfg = await chrome.storage.local.get([
+    'webAppUrl',
+    'autoSync',
+    'lastSyncAtMs',
+    'syncedData'
+  ]);
   if (isAuto && cfg.autoSync === false) {
     return { ok: false, skipped: true, reason: 'Synchronisation automatique désactivée' };
   }
@@ -485,19 +914,24 @@ async function runFullSync({ explicitToken = null, isAuto = false, monthsToFetch
     return { ok: true, skipped: true, reason: 'Déjà synchronisé récemment' };
   }
 
-  const token = await getAccessToken(explicitToken);
+  const { token, refreshToken } = await getValidAccessToken(explicitToken, explicitRefreshToken);
   if (!token) {
     throw new Error(
-      'Session Octopus Energy non détectée. Connectez-vous sur octopusenergy.fr/espace-client.'
+      'Session Octopus Energy non détectée. Connectez-vous sur octopusenergy.fr/espace-client puis rafraîchissez la page (F5).'
     );
   }
 
   isSyncing = true;
   try {
     // 1. Auto-découverte universelle des logements et compteurs du client connecté
-    const discoveredProps = await discoverClientSupplyPoints(token);
+    const { discovered: discoveredProps, activeToken } = await discoverClientSupplyPoints(
+      token,
+      refreshToken
+    );
     if (!discoveredProps.length) {
-      throw new Error('Aucun logement ou compteur trouvé sur ce compte Octopus Energy.');
+      throw new Error(
+        'Aucun logement ou compteur trouvé. Rafraîchissez votre onglet octopusenergy.fr (touche F5) puis réessayez.'
+      );
     }
 
     const accountNumber = discoveredProps[0].accountNumber;
@@ -509,7 +943,7 @@ async function runFullSync({ explicitToken = null, isAuto = false, monthsToFetch
     let bordeauxRows = null;
 
     for (const prop of discoveredProps) {
-      const parsed = await fetchPropertyDataMonthByMonth(prop, token, effectiveMonths);
+      const parsed = await fetchPropertyDataMonthByMonth(prop, activeToken, effectiveMonths);
       prop.isHpHc = parsed.isHpHc;
 
       propertiesPayload.push({
@@ -586,9 +1020,10 @@ async function runFullSync({ explicitToken = null, isAuto = false, monthsToFetch
     };
 
     if (isOwnerAccount && (lapleauRows || bordeauxRows)) {
+      const prevSynced = cfg.syncedData || {};
       storageUpdate.syncedData = {
-        lapleau: lapleauRows || [],
-        bordeaux: bordeauxRows || []
+        lapleau: mergeRowsByDate(prevSynced.lapleau, lapleauRows),
+        bordeaux: mergeRowsByDate(prevSynced.bordeaux, bordeauxRows)
       };
     }
 

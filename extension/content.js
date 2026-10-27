@@ -7,8 +7,8 @@
   if (window.__octopusSyncInjected) return;
   window.__octopusSyncInjected = true;
 
-  function getCookieToken() {
-    const match = document.cookie.match(/(?:^|;\s*)accessToken=([^;]+)/);
+  function getCookieValue(name) {
+    const match = document.cookie.match(new RegExp('(?:^|;\\s*)' + name + '=([^;]+)'));
     return match ? decodeURIComponent(match[1]) : null;
   }
 
@@ -54,13 +54,15 @@
   }
 
   function triggerAutoSync() {
-    const token = getCookieToken();
-    if (!token) return;
+    const token = getCookieValue('accessToken');
+    const refreshToken = getCookieValue('refreshToken');
+    if (!token && !refreshToken) return;
 
     chrome.runtime.sendMessage(
       {
         type: 'OCTOPUS_SYNC_NOW',
         accessToken: token,
+        refreshToken: refreshToken,
         isAuto: true
       },
       (res) => {
@@ -83,7 +85,10 @@
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg && msg.type === 'GET_PAGE_COOKIE_TOKEN') {
-      sendResponse({ accessToken: getCookieToken() });
+      sendResponse({
+        accessToken: getCookieValue('accessToken'),
+        refreshToken: getCookieValue('refreshToken')
+      });
     }
   });
 
